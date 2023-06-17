@@ -1,281 +1,333 @@
+import itertools
+
 import networkx as nx
-import cosasi
-import random
 import numpy as np
-from graph_generation import CiteSeer, PubMed, Cora, coms, photo, connSW, rand
-from time import time
-import tracemalloc
-import logging
-# from memory_profiler import profile
 
-tracemalloc.start()
+from xflow.method import source_results
+from xflow.method import estimators
+# import single_source
 
-# Create a logger
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+def netsleuth(I, G, hypotheses_per_step=1):
+    """Implements the multi-source NETSLEUTH algorithm to score combinations
+    of nodes in G.
 
-# Create a file handler
-file_handler = logging.FileHandler('output.log')
-file_handler.setLevel(logging.INFO)
+    Parameters
+    ----------
+    I : NetworkX Graph
+        The infection subgraph observed at a particular time step
+    G : NetworkX Graph
+        The original graph the infection process was run on.
+        I is a subgraph of G induced by infected vertices at observation time.
+    hypotheses_per_step : int (default 1)
+        number of candidate sources to be kept per iteration of NETSLEUTH.
+        Particular usage is described in greater detail in `Notes` section.
 
-# Create a console handler
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
+    Notes
+    -----
+    The number of source hypotheses returned will be hypotheses_per_step*[number of seed nodes],
+    the latter of which is automatically determined via minimum description length
+    calculations.
 
-# Create a formatter and set it for both handlers
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-file_handler.setFormatter(formatter)
-console_handler.setFormatter(formatter)
+    NETSLEUTH is described in [1]_ and [2]_.
 
-# Add the handlers to the logger
-logger.addHandler(file_handler)
-logger.addHandler(console_handler)
+    NETSLEUTH has linear complexity with the number of edges of the infected subgraph,
+    edges of the frontier set, and vertices of the infected subgraph.
 
-# Now, logging.info() etc. will write to both the file and the console:
-# logger.info("This is an info message.")
+    The standard n-source version of NETSLEUTH operates as follows:
 
-def get_result(sims, true_source):
-#     start = time()
-    
-    # Rank nodes by score
-#     logger.info('Rank : %s', sims.rank())
+    1. Obtain Source 1 via single-source method
 
-    # Returns the top n item indices by rank
-#     logger.info('Top n item : %s', sims.topn(n=5))
-   
-    # Finds the rank of the true source, by the algorithm's scoring protocol.
-#     logger.info('Evaluate solution rank : %s', sims.evaluate_solution_rank(true_source))
-   
-    # Finds the shortest path length between each node in the solution set and the true souce.
-#     logger.info('Shortest Distance : %s', sims.evaluate_distance(true_source))
+    2. Delete Source 1 from infection subgraph; obtain Source 2 via single-source method
 
-    # Runs evaluation algorithms and returns a dictionary of results
-    evals = sims.evaluate(true_source)
+        ...
 
-    # logger.info('evals', evals)
+    n. Delete Source n-1 from infection subgraph; obtain Source n via single-source method.
 
-    # solution rank
-    # Where feasible, cosasi enhances localization algorithms to execute ranking across multiple hypotheses. This approach enables us to rank all hypotheses based on the algorithm's inherent scoring criteria and provide the rank of the actual source amongst all hypotheses. This resembles the commonly used "precision at k" metric in the field of information retrieval.
-    #Therefore, according to this algorithm, the real source was the nth most probable hypothesis.
-#     logger.info('solution rank of nth : %s', evals["rank"])
+    This does not lend itself to ranking alternative hypotheses, so we implement a
+    more general variant:
 
-    # rank / len(self.data["scores"])
-#     print('evals rank % :', evals["rank %"])
+    1. Obtain top ``hypotheses_per_step``-many candidates for Source 1 via single-source
+    method; each corresponds to one hypothesis source set, each of size 1
 
-    #  a metric that assesses the minimum graph distance between vertex sets that may be of different sizes
-    # The top-scoring hypothesis was close to the true source.
-    top_dis= evals["distance"]["top score's distance"]
-    logger.info('top score distance : %s', top_dis)
+    2. For each hypothesis source set, delete these nodes from a copy of the infection subgraph,
+    then obtain top ``hypotheses_per_step``-many candidates for Source 2 via single-source
+    method; construct ``|source sets| * hypotheses_per_step`` new source sets to replace the old
+    source sets, each of size 2
 
-    # evaluate the distance from true source of all computed hypotheses
-#     distances = evals["distance"]["all distances"].values()
-    # logger.info('all distances', distances)
+        ...
 
-    # the distance from true source of these hypotheses ranged from min to max
-#     logger.info('min distances : %s',min(distances))
-#     logger.info('max distances : %s',max(distances))
-    
-    # todo: add more metrics
-    
-#     end = time()
-#     logger.info('time : %s', end - start)
+    n. For each hypothesis source set, delete these nodes from a copy of the infection subgraph,
+    then obtain top ``hypotheses_per_step``-many candidates for Source n via single-source
+    method; construct |source sets|*``hypotheses_per_step`` new source sets to replace the old
+    source sets, each of size n
 
 
-# @profile
-def analyze_graph(G, seed):
+    Examples
+    --------
+    >>> result = cosasi.multiple_source.netsleuth(I, G, number_sources=3, hypotheses_per_step=3)
 
-    # record memory usage
-#     snapshot = tracemalloc.take_snapshot()
-#     top_stats = snapshot.statistics('lineno')
-#     for stat in top_stats[:10]:
-#         logger.info(stat)
+    References
+    ----------
+    .. [1] B. Prakash, J. Vreeken, C. Faloutsos,
+        "Spotting Culprits in Epidemics: How Many and Which Ones?"
+        IEEE 12th International Conference on Data Mining, 2012
+        https://ieeexplore.ieee.org/document/6413787
+    .. [2] L. Ying and K. Zhu,
+        "Diffusion Source Localization in Large Networks"
+        Synthesis Lectures on Communication Networks, 2018
+    """
+    multisource_scores = {}
+    mdl_decreasing = True
+    this_mdl = np.inf
+    last_mdl = np.inf
+    i = 1
 
-    random.seed(seed)
-    np.random.seed(seed)
+    while mdl_decreasing:
+        if i == 1:
+            step_result = single_source.netsleuth(I, G)
+            for s in step_result.topn(hypotheses_per_step):
+                multisource_scores[(s)] = estimators.description_length([s], G)
+        else:
+            new_multisource_scores = {}
+            for j in multisource_scores.keys():
+                H = I.copy()
+                if i == 2:
+                    H.remove_nodes_from([j])
+                else:
+                    H.remove_nodes_from(j)
+                step_result = single_source.netsleuth(H, G)
+                for s in step_result.topn(hypotheses_per_step):
+                    if i == 2:
+                        new_s = tuple([j] + [s])
+                    else:
+                        new_s = tuple(list(j) + [s])
+                    new_multisource_scores[new_s] = estimators.description_length(
+                        list(new_s), G
+                    )
+            multisource_scores = new_multisource_scores
 
-    contagion = cosasi.StaticNetworkContagion(
+        # update mdl tracker
+        last_mdl = this_mdl
+        this_mdl = min(multisource_scores.values())
+        mdl_decreasing = this_mdl < last_mdl
+        i += 1
+
+    result = MultiSourceResult(
+        source_type="multi-source",
+        inference_method="netsleuth",
+        scores=multisource_scores,
         G=G,
-        model="si",
-        infection_rate=0.1,
-        # recovery_rate=0.005, # for SIS/SIR models
-        number_infected = 3,
-        seed=seed
+        reverse=False,
     )
+    return result
 
-    contagion.forward(steps = 16)
-    
-    step = 15
 
-    # This obtains the indices of all vertices in the infected category at the 15th step of the simulation.
-    I = contagion.get_infected_subgraph(step=step)
-    logger.info('Infected Subgraph : %s',I)
+def fast_multisource_netsleuth(I, G, number_sources=None):
+    """Greedily runs single-source NETSLEUTH on each estimated infection subgraph attributable
+    to each of the hypothesized number of sources.
 
-    # #benchmark
-    # benchmark = cosasi.BenchmarkFromSimulation(
-    #     contagion=contagion,
-    #     information_type="single snapshot",
-    #     t=step
-    # )
-    # logger.info('benchmark for sims : %s', benchmark)
-    # results = benchmark.go()
-    # logger.info('benchmark result for sims : %s',results)
+    Parameters
+    ----------
+    I : NetworkX Graph
+        The infection subgraph observed at a particular time step
+    G : NetworkX Graph
+        The original graph the infection process was run on.
+        I is a subgraph of G induced by infected vertices at observation time.
+    number_sources : int or None (optional)
+        if int, this is the hypothesized number of infection sources
+        if None, estimates the number of sources
 
-    # benchmark = cosasi.BenchmarkFromDetails(
-    #     true_source=true_source,
-    #     G=G,
-    #     I=I,
-    #     t=step,
-    #     number_sources=len(true_source),
-    #     information_type="single snapshot"
-    # )
-    # logger.info('benchmark : %s', benchmark)
+    Examples
+    --------
+    >>> result = cosasi.multiple_source.fast_multisource_netsleuth(I, G)
 
-    # results = benchmark.go()
-    # logger.info('benchmark result : %s', results)
+    Notes
+    -----
+    Unofficial variant of multisource NETSLEUTH intended for fast computation and ranking,
+    because the typical multisource version does not lend itself to scoring many possible
+    source sets.
 
-    # estimate the number of sources
-#     number_sources = cosasi.utils.estimators.number_sources(I=I, number_sources=None, return_source_subgraphs=False, number_sources_method="eigengap")
-#     logger.info('estimated number of sources : %s', number_sources)
+    NETSLEUTH is described in [1]_ and [2]_. More authoritative implementation is found in
+    `multisource.netsleuth`.
 
-    # alternative estimate the number of sources
-#     alt_number_sources = cosasi.utils.estimators.number_sources(I=I, number_sources=None, return_source_subgraphs=False, number_sources_method="netsleuth", G=G)
-#     logger.info('alternative estimated number of sources : %s', alt_number_sources)
+    References
+    ----------
+    .. [1] B. Prakash, J. Vreeken, C. Faloutsos,
+        "Spotting Culprits in Epidemics: How Many and Which Ones?"
+        IEEE 12th International Conference on Data Mining, 2012
+        https://ieeexplore.ieee.org/document/6413787
+    .. [2] L. Ying and K. Zhu,
+        "Diffusion Source Localization in Large Networks"
+        Synthesis Lectures on Communication Networks, 2018
+    """
+    if not number_sources:
+        number_sources, subgraphs = estimators.number_sources(
+            I, return_source_subgraphs=True
+        )
+    else:
+        number_sources, subgraphs = estimators.number_sources(
+            I, number_sources=number_sources, return_source_subgraphs=True
+        )
 
-    # estimate the number of sources and return the source subgraphs
-#     opt_number_sources, subgraphs = cosasi.utils.estimators.number_sources(I=I, number_sources=None, return_source_subgraphs=True)
-#     logger.info('optional estimated number of sources : %s', opt_number_sources)
-    # logger.info('subgraphs', subgraphs)
+    sources_scores = [
+        {
+            k: v
+            for k, v in single_source.netsleuth(subgraphs[i], G).data["scores"].items()
+            if v != -np.inf
+        }
+        for i in range(number_sources)
+    ]
+    data = [list(d.keys()) for d in sources_scores]
+    product_scores = {}
 
-    # The most frequently encountered data type in literature concerning source inference is known as a "snapshot." This refers to a comprehensive set of infection data provided for a specific point in time.    
-    # infected_indices = contagion.get_infected_indices(step=step)
-    # logger.info('Infected indices', infected_indices)
+    for item in itertools.product(*data):
+        idx = tuple(item)
+        product_scores[idx] = 0
+        for i in range(len(idx)):
+            product_scores[idx] += sources_scores[i][idx[i]]
+    result = MultiSourceResult(
+        source_type="multi-source",
+        inference_method="fast multi-source netsleuth",
+        scores=product_scores,
+        G=G,
+    )
+    return result
 
-    # On the other hand, certain algorithms utilize "observers," a select group of vertices designated to keep track of their infection status. In cosasi's implementation, the user determines the number of these observers, and their specific selection is carried out in a uniformly random manner.
-    # observers = contagion.get_observers(observers=5)
-    # logger.info('Observers', observers)
 
-    # Some algorithms make use of an analytical concept known as the infection frontier, which represents the collection of infected vertices that have infected neighbors. This concept is particularly relevant to the Susceptible-Infected (SI) epidemic model, where vertices do not recover from the infection. Under these circumstances, the frontier set is comprised of nodes that could have been the most recently infected by the given point in time.
-    # frontier = contagion.get_frontier(step=step)
-    # logger.info('Frontier',frontier)
+def fast_multisource_jordan_centrality(I, G, number_sources=None):
+    """Greedily runs single-source Jordan centrality on each estimated infection
+    subgraph attributable to each of the hypothesized number of sources.
 
-    # Objects of the StaticNetworkContagion class store their compartmental histories. These histories can be accessed through their 'history' attribute.
-    # logger.info('history', contagion.history)
+    Parameters
+    ----------
+    I : NetworkX Graph
+        The infection subgraph observed at a particular time step
+    G : NetworkX Graph
+        The original graph the infection process was run on.
+        I is a subgraph of G induced by infected vertices at observation time.
+    number_sources : int or None (optional)
+        if int, this is the hypothesized number of infection sources
+        if None, estimates the number of sources
 
-    true_source = contagion.get_source()
-    logger.info('True Source : %s',true_source)
+    Notes
+    -----
+    The Jordan infection center is the vertex with minimum infection eccentricity.
+    This is described in [1]_ and [2]_.
 
-    # implementation of NETSLEUTH providing no information about the number of sources
-    start = time()
-    logger.info('multisource netsleuth hypotheses_per_step=1')
-    sims = cosasi.source_inference.multiple_source.netsleuth(I=I, G=G, hypotheses_per_step=1)
-    get_result(sims, true_source)
-    end = time()
-    logger.info('time : %s', end - start)
-    
-#     logger.info('multisource netsleuth hypotheses_per_step=2')
-#     sims = cosasi.source_inference.multiple_source.netsleuth(I=I, G=G, hypotheses_per_step=2)
-#     get_result(sims, true_source)
-    
-#     logger.info('multisource netsleuth hypotheses_per_step=3')
-#     sims = cosasi.source_inference.multiple_source.netsleuth(I=I, G=G, hypotheses_per_step=3)
-#     get_result(sims, true_source)
+    Examples
+    --------
+    >>> result = cosasi.multiple_source.fast_multisource_jordan_centrality(I, G)
 
-    # implementation of LISN providing no information about the number of sources
-#     logger.info('fast multisource lisn')
-#     sims = cosasi.source_inference.multiple_source.fast_multisource_lisn(I=I, G=G, t=step)
-#     get_result(sims, true_source)
+    References
+    ----------
+    .. [1] L. Ying and K. Zhu,
+        "On the Universality of Jordan Centers for Estimating Infection Sources in Tree Networks"
+        IEEE Transactions of Information Theory, 2017
+    .. [2] L. Ying and K. Zhu,
+        "Diffusion Source Localization in Large Networks"
+        Synthesis Lectures on Communication Networks, 2018
+    """
+    if not number_sources:
+        number_sources, subgraphs = estimators.number_sources(
+            I, return_source_subgraphs=True
+        )
+    else:
+        number_sources, subgraphs = estimators.number_sources(
+            I, number_sources=number_sources, return_source_subgraphs=True
+        )
 
-    # unofficial implementation of NETSLEUTH providing no information about the number of sources
-#     logger.info('fast multisource netsleuth')
-#     sims = cosasi.multiple_source.fast_multisource_netsleuth(I=I, G=G)
-#     get_result(sims, true_source)
+    sources_scores = [
+        {
+            k: v
+            for k, v in single_source.jordan_centrality(subgraphs[i], G)
+            .data["scores"]
+            .items()
+            if v != -np.inf
+        }
+        for i in range(number_sources)
+    ]
+    data = [list(d.keys()) for d in sources_scores]
+    product_scores = {}
 
-    # implementation of jordan centrality providing no information about the number of sources
-#     logger.info('fast multisource jordan centrality')
-#     sims = cosasi.multiple_source.fast_multisource_jordan_centrality(I=I, G=G)
-#     get_result(sims, true_source)
+    for item in itertools.product(*data):
+        idx = tuple(item)
+        product_scores[idx] = 0
+        for i in range(len(idx)):
+            product_scores[idx] += sources_scores[i][idx[i]]
+    result = MultiSourceResult(
+        source_type="multi-source",
+        inference_method="fast multi-source jordan centrality",
+        scores=product_scores,
+        G=G,
+    )
+    return result
 
-    ###############################
-    
-    # unofficial implementation of NETSLEUTH assuming 2 sources
-    start = time()
-    logger.info('fast multisource netsleuth assuming 2 sources')
-    sims = cosasi.source_inference.multiple_source.fast_multisource_netsleuth(I=I, G=G, number_sources=2)
-    get_result(sims, true_source)
-    end = time()
-    logger.info('time : %s', end - start)
-    
-    # implementation of jordan centrality assuming 2 sources
-    start = time()
-    logger.info('fast multisource jordan centrality assuming 2 sources')
-    sims = cosasi.source_inference.multiple_source.fast_multisource_jordan_centrality(I=I, G=G, number_sources=2)
-    get_result(sims, true_source)
-    end = time()
-    logger.info('time : %s', end - start)
+def fast_multisource_lisn(I, G, t, number_sources=None):
+    """Greedily runs single-source LISN algorithm on each estimated infection
+    subgraph attributable to each of the hypothesized number of sources.
 
-    # implementation of LISN assuming 3 sources
-    start = time()
-    logger.info('fast multisource lisn assuming 2 sources')
-    sims = cosasi.source_inference.multiple_source.fast_multisource_lisn(I=I, G=G, t=step, number_sources=2)
-    get_result(sims, true_source)
-    end = time()
-    logger.info('time : %s', end - start)
+    Parameters
+    ----------
+    I : NetworkX Graph
+        The infection subgraph observed at a particular time step
+    G : NetworkX Graph
+        The original graph the infection process was run on.
+        I is a subgraph of G induced by infected vertices at observation time.
+    t : int
+        the observation timestep corresponding to I
+    number_sources : int or None (optional)
+        if int, this is the hypothesized number of infection sources
+        if None, estimates the number of sources
 
-    contagion.reset_sim()
+    Notes
+    -----
+    The Jordan infection center is the vertex with minimum infection eccentricity.
+    This is described in [1]_ and [2]_.
 
-for i in range(5, 10): 
-#     logger.info('------------------------------------------------')
-#     logger.info('Analyzing CiteSeer')
-#     logger.info('round : %s', i+1)
-#     seed = 10 * (i+1)
-#     logger.info('seed : %s', seed)
-#     G = CiteSeer()
-#     analyze_graph(G, seed)
-    
-#     logger.info('------------------------------------------------')
-#     logger.info('Analyzing Cora')
-#     logger.info('round : %s', i+1)
-#     seed = 10 * (i+1)
-#     logger.info('seed : %s', seed)
-#     G = Cora()
-#     analyze_graph(G, seed)
+    Examples
+    --------
+    >>> result = cosasi.multiple_source.fast_multisource_jordan_centrality(I, G)
 
-    logger.info('------------------------------------------------')
-    logger.info('Analyzing connected small world')
-    logger.info('round : %s', i+1)
-    seed = 10 * (i+1)
-    logger.info('seed : %s', seed)
-    G = connSW(1000, 20, 0.1)
-    analyze_graph(G, seed)
+    References
+    ----------
+    .. [1] L. Ying and K. Zhu,
+        "On the Universality of Jordan Centers for Estimating Infection Sources in Tree Networks"
+        IEEE Transactions of Information Theory, 2017
+    .. [2] L. Ying and K. Zhu,
+        "Diffusion Source Localization in Large Networks"
+        Synthesis Lectures on Communication Networks, 2018
+    """
+    if not number_sources:
+        number_sources, subgraphs = estimators.number_sources(
+            I, return_source_subgraphs=True
+        )
+    else:
+        number_sources, subgraphs = estimators.number_sources(
+            I, number_sources=number_sources, return_source_subgraphs=True
+        )
 
-#     logger.info('------------------------------------------------')
-#     logger.info('Analyzing random')
-#     logger.info('round : %s', i+1)
-#     seed = 10 * (i+1)
-#     logger.info('seed : %s', seed)
-#     G = rand(1000, 0.25, seed)
-#     analyze_graph(G, seed)
+    sources_scores = [
+        {
+            k: v
+            for k, v in single_source.lisn(I=subgraphs[i], G=G, t=t)
+            .data["scores"]
+            .items()
+            if v != -np.inf
+        }
+        for i in range(number_sources)
+    ]
+    data = [list(d.keys()) for d in sources_scores]
+    product_scores = {}
 
-#     logger.info('------------------------------------------------')
-#     logger.info('Analyzing PubMed')
-#     logger.info('round : %s', i+1)
-#     seed = 10 * (i+1)
-#     logger.info('seed : %s', seed)
-#     G = PubMed()
-#     analyze_graph(G, seed)
-
-#     logger.info('------------------------------------------------')
-#     logger.info('Analyzing coms')
-#     logger.info('round : %s', i+1)
-#     seed = 10 * (i+1)
-#     logger.info('seed : %s', seed)
-#     G = coms()
-#     analyze_graph(G, seed)
-
-#     logger.info('------------------------------------------------')
-#     logger.info('Analyzing photo')
-#     logger.info('round : %s', i+1)
-#     seed = 10 * (i+1)
-#     logger.info('seed : %s', seed)
-#     G = photo()
-#     analyze_graph(G, seed)
+    for item in itertools.product(*data):
+        idx = tuple(item)
+        product_scores[idx] = 0
+        for i in range(len(idx)):
+            product_scores[idx] += sources_scores[i][idx[i]]
+    result = MultiSourceResult(
+        source_type="multi-source",
+        inference_method="fast multi-source lisn",
+        scores=product_scores,
+        G=G,
+    )
+    return result

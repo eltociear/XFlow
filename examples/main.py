@@ -36,7 +36,7 @@ se = [seed_random, seed_degree, seed_eigen]
 #     output = [ 'animation', 'csv', 'fig'])
 
 # # configurations of IBM experiments
-# from xflow.method.ibm import pi as ibm_pi, degree as ibm_degree, sigma as ibm_sigma, eigen as im_eigen, greedy as ibm_greedy
+from xflow.method.ibm import pi as ibm_pi, degree as ibm_degree, sigma as ibm_sigma, eigen as im_eigen, greedy as ibm_greedy
 # me = [ibm_sigma, ibm_degree]
 # rt = run (
 #     graph = gs, diffusion = df, seeds = se,
@@ -45,9 +45,11 @@ se = [seed_random, seed_degree, seed_eigen]
 #     output = [ 'animation', 'csv', 'fig'])
  
 # configurations of SL experiments
-from xflow.method.cosasi.source_inference.multiple_source.netsleuth import netsleuth, fast_multisource_netsleuth
-from xflow.method.cosasi.source_inference.multiple_source.lisn import fast_multisource_lisn
-from xflow.method.cosasi.source_inference.multiple_source.jordan import 
+# from xflow.method.cosasi.source_inference.multiple_source.netsleuth import netsleuth, fast_multisource_netsleuth
+# from xflow.method.cosasi.source_inference.multiple_source.lisn import fast_multisource_lisn
+# from xflow.method.cosasi.source_inference.multiple_source.jordan import fast_multisource_jordan_centrality
+
+from xflow.method.sl import netsleuth, fast_multisource_netsleuth, fast_multisource_lisn, fast_multisource_jordan_centrality
 
 me = [netsleuth, fast_multisource_netsleuth, fast_multisource_lisn, fast_multisource_jordan_centrality]
 rt = run (
